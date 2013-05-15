@@ -30,8 +30,10 @@ depending on message type.
    - `version`: string (the proposed protocol version)
    - `support`: array of strings (protocol versions supported by the client,
       in order of preference)
+
  * `connected` (server->client)
    - `session`: string (an identifier for the DDP session)
+
  * `failed` (server->client)
    - `version`: string (a suggested protocol version to connect with)
 
