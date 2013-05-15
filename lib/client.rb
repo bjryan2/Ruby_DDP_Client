@@ -6,7 +6,7 @@ Bundler.require
 
 #ddp is just an extension of a websocket protocol
 class DDP::Client < Faye::WebSocket::Client
-  attr_accessor :collections, :onconnect
+  attr_accessor :collections, :connect_m
 
   #sets up basic server for ddp connections
   def initialize( host, port = 8888, path = "websocket",
@@ -14,18 +14,15 @@ class DDP::Client < Faye::WebSocket::Client
     super("http://#{host}:#{port}/#{path}") #setup websocket connection
 
 
-    self.init_event_handlers()
+    self.init_handlers()
 
-    @callbacks = {}
+    @sub_callbacks = {}
     @collections = {}
     @subs = {}
     @version = version
     @session = nil
     @curr_id = 0
     @support = support
-
-
-
   end
 
   #sends connection message to server
@@ -55,15 +52,14 @@ class DDP::Client < Faye::WebSocket::Client
           support: @support
           })
       end
-
     end
   end
 
   #sends a method call
-  def call(method, params = [], &blk)
+  def call_method(method, params = [], &blk)
     id = self.next_id()
     self.send(msg: 'method', id: id, method: method, params: params)
-    @callbacks[id] = blk
+    @sub_callbacks[id] = blk
   end
 
   #subscripe to the data 'name' on the server
@@ -74,7 +70,7 @@ class DDP::Client < Faye::WebSocket::Client
     self.send(msg: 'sub', id: id, name: name, params: params)
 
     @subs[name] = id
-    @callbacks[id] = blk
+    @sub_callbacks[id] = blk
   end
 
   #client unsibscribes from the specified subscription
@@ -85,118 +81,103 @@ class DDP::Client < Faye::WebSocket::Client
   end
 
   private
-    #updates and returns the next available ID number
-    def next_id
-      (@curr_id +=1).to_s
-    end
+  #updates and returns the next available ID number
+  def next_id
+    (@curr_id +=1).to_s
+  end
 
-    def send data
-      self.send(data.to_json)
-    end
+  def send data
+    self.send(data.to_json)
+  end
 
-    #handlers for sever sents
-    def init_event_handlers
-      #begin the client session by attempting to connect to the server
-      self.onopen = lamda {self.connect()}
+  #handlers for server sents
+  def init_handlers
+    #begin the client session by attempting to connect to the server
+    self.onopen = lamda {self.connect()}
 
-      self.onmessage = lambda do |event|
+    self.onmessage = lambda do |event|
 
-        data = JSON.parse(event.data)
+      data = JSON.parse(event.data)
 
-        if data.has_key? 'msg'
+      if data.has_key? 'msg'
 
-          case(data['msg'])
-
-          #successfull connection!
-          when 'connected'
-            self.connect.call event
+      case(data['msg'])
+        when 'connected'
+          self.connect_m.send_method event
 
           #inserts the given data into the client datastore
-          when 'addad'
-            if data.has_key? 'collection'
-              c_name = data['collection']
-              c_id = data['id']
-              @collections[c_name] ||= {}
-              data['params'].each { |k,v| @collections[c_name][c_id][k] = v }
-            end
+        when 'added'
+          if data.has_key? 'collection'
+            c_name = data['collection']
+            c_id = data['id']
+            @collections[c_name] ||= {}
+            data['params'].each { |k,v| @collections[c_name][c_id][k] = v }
+          end
 
           #update the given data in the clients datastore
-          when 'changed'
-            if data.has_key 'collection'
+        when 'changed'
+           if data.has_key 'collection'
               c_name = data['collection']
               c_id = data['id']
               c_fields = data['fields']
               to_clear = data['cleared']
 
               #clear out fields specified at 'cleared'
-              to_clear.each do |f|
-                @collections[c_name][c_id][f].delete f
-              end
+              to_clear.each { |f| @collections[c_name][c_id][f].delete f }
               #insert/udpdate new data
-              c_fields.each do |k,v|
-                @collections[c_name][c_id][k] = v
-              end
-
-            end
+              c_fields.each { |k,v| @collections[c_name][c_id][k] = v }
+           end
 
           #remove the given data from the client's datastore
-          when 'removed'
-            if data.has_key 'collection'
-              c_name = data['collection']
-              c_id = data['id']
-              @collections[c_name][c_id] = nil
+        when 'removed'
+          if data.has_key 'collection'
+            c_name = data['collection']
+            c_id = data['id']
+            @collections[c_name][c_id] = nil
+          end
+
+        #adds the document *before* that whose id is specified in the id
+        #field of addedBefore
+        when 'addedBefore'
+          if data.has_key? 'collection'
+            c_name = data['collection']
+            c_id = data['id']
+            before = data['before']
+
+            @collections[c_name] ||= {}
+            #adds before if non-null
+            if before
+              data['params'].each { |k,v| @collections[c_name][c_id-1][k] = v }
+            else
+              data['params'].each { |k,v| @collections[c_name][c_id][k] = v }
             end
+          end
 
-          when 'ready'
-          #adds the document *before* that whose id is specified in the id
-          #field of addedBefore
-          when 'addedBefore'
+        when 'movedBefore'
+          if data.has_key? 'collection'
+            c_name = data['collection']
+            c_id = data['id']
+            before = data['before']
 
-            if data.has_key? 'collection'
-              c_name = data['collection']
-              c_id = data['id']
-              before = data['before']
-
-              @collections[c_name] ||= {}
-              #adds before if non-null
-              if before
-                data['params'].each { |k,v| @collections[c_name][c_id-1][k] = v }
-              else
-                data['params'].each { |k,v| @collections[c_name][c_id][k] = v }
-              end
+            @collections[c_name] ||= {}
+            #adds before if non-null
+            if before
+              data['params'].each { |k,v| @collections[c_name][c_id-1][k] = v }
+            else
+              data['params'].each { |k,v| @collections[c_name][c_id][k] = v }
             end
+          end
 
-          when 'movedBefore'
-            if data.has_key? 'collection'
-              c_name = data['collection']
-              c_id = data['id']
-              before = data['before']
+        when 'ready'
+          puts "Server acks READY"
 
-              @collections[c_name] ||= {}
-              #adds before if non-null
-              if before
-                data['params'].each { |k,v| @collections[c_name][c_id-1][k] = v }
-              else
-                data['params'].each { |k,v| @collections[c_name][c_id][k] = v }
-              end
-            end
+      end #case
+      end # msg?
 
-          when 'ready'
-              puts "Server acks READY"
-
-          end #case
-        end # msg?
-
-        #there is no message ???
-
-        self.on(:close) = lambda {|e| puts "Connection Closed"}
+      self.on(:close) = lambda {|e| puts "Connection Closed"}
       end #message handler
-    end #init_event_handlrers
-
-
-end #class
-
-
+  end #init_handlrers
+end
 
 
 

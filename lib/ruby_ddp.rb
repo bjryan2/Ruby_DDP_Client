@@ -68,7 +68,7 @@ class DDP::Client < Faye::WebSocket::Client
   #it may be tracked by the client
   def subscribe(name, params, &blk)
     id = self.next_id()
-    self.send(msg: 'sub', id: id, name: name, params: params)
+    self.send({msg: 'sub', id: id, name: name, params: params})
 
     @subs[name] = id
     @callbacks[id] = blk
@@ -189,7 +189,7 @@ class DDP::Client < Faye::WebSocket::Client
         self.on(:close) = lambda {|e| puts "Connection Closed"}
       end #message handler
     end #init_event_handlrers
-  end
+
 end #class
 
 
