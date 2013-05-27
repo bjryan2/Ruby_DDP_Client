@@ -10,49 +10,20 @@ class DDP::Client < Faye::WebSocket::Client
 
   #sets up basic server for ddp connections
   def initialize( host, port = 8888, path = "websocket",
-                  version = self.version, support )
+                  version, support )
     super("http://#{host}:#{port}/#{path}") #setup websocket connection
 
-
+    #handler for incoming respones from the server
     self.init_handlers()
 
     @sub_callbacks = {}
     @collections = {}
-    @subs = {}
+    @sub_ids = {}
     @version = version
+    @last_suc_version = nil
     @session = nil
     @curr_id = 0
     @support = support
-  end
-
-  #sends connection message to server
-  def connect
-    self.send({
-          msg: :connect,
-          version: @version,
-          support: @support
-        })
-
-    #handle incoming response form the server
-    self.onmessage = lambda do |event|
-
-      res = JSON.parse(event.data)
-
-      if res.has_key? 'session'
-        #connection is successful - update session and record version
-        @session = res['session'].to_s
-        @@last_suc_version = @version
-
-      else #there was a failed connection
-        @version = res['version']
-        #retry the send request with the version specified by the server
-        self.send({
-          msg: :connect
-          version: @version,
-          support: @support
-          })
-      end
-    end
   end
 
   #sends a method call
@@ -69,18 +40,45 @@ class DDP::Client < Faye::WebSocket::Client
     id = self.next_id()
     self.send(msg: 'sub', id: id, name: name, params: params)
 
-    @subs[name] = id
+    @sub_ids[name] = id
     @sub_callbacks[id] = blk
   end
 
   #client unsibscribes from the specified subscription
   def unsubscribe(name)
-    id = @subs[name]
-
+    id = @sub_ids[name]
     self.send(msg: 'unsub', id: id)
   end
 
   private
+
+  #sends connection message to server
+  def connect(version = @version)
+
+    #send initial connection request
+    self.send(msg: :connect, version: @version, support: @support)
+
+    #handle incoming response form the server
+    self.onmessage = lambda do |event|
+
+      res = JSON.parse(event.data)
+
+      if res.has_key? 'session'
+        #connection is successful - update session and record version
+        @session = res['session'].to_s
+        @last_suc_version = @version
+
+      #if the connection fails the suggested version should be retrieved
+      #from the response and the connection should be made
+      else #there was a failed connection
+        sug_version = res['version']
+        #retry the send request with the version specified by the server
+        self.connect(sug_version)
+
+      end
+    end
+  end
+
   #updates and returns the next available ID number
   def next_id
     (@curr_id +=1).to_s
@@ -93,7 +91,7 @@ class DDP::Client < Faye::WebSocket::Client
   #handlers for server sents
   def init_handlers
     #begin the client session by attempting to connect to the server
-    self.onopen = lamda {self.connect()}
+    self.onopen = lamda { self.connect() }
 
     self.onmessage = lambda do |event|
 
